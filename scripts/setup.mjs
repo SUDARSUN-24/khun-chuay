@@ -5,6 +5,7 @@
 import { spawn } from "node:child_process";
 import { readFileSync, writeFileSync } from "node:fs";
 import { createInterface } from "node:readline/promises";
+import { installRichMenu } from "./richmenu.mjs";
 
 const TOML = new URL("../wrangler.toml", import.meta.url);
 
@@ -50,6 +51,12 @@ try {
   if (!secret || !token) throw new Error("Both keys are needed. Run npm run setup again when you have them.");
   await run(["secret", "put", "LINE_CHANNEL_SECRET"], { input: secret });
   await run(["secret", "put", "LINE_CHANNEL_ACCESS_TOKEN"], { input: token });
+  try {
+    await installRichMenu(token);
+    console.log("✅ Button menu installed in LINE");
+  } catch (e) {
+    console.log(`⚠️  Couldn't install the button menu (${e.message}). Run "npm run richmenu" later to retry.`);
+  }
 
   step(5, "Connect LINE to the bot");
   const hook = url ? `${url}/webhook` : "https://khun-chuay.<your-subdomain>.workers.dev/webhook";

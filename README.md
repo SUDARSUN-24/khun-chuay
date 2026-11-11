@@ -6,6 +6,20 @@ No app to install and no website. Add the bot as a friend or drop it into your g
 
 ---
 
+## 📱 No commands to remember: just tap
+
+![The button menu under the chat](assets/richmenu.png)
+
+A button menu sits under the chat. Tapping **💸 หารบิล** starts a short conversation:
+
+```
+🤖 💸 ยอดรวมทั้งบิลเท่าไหร่?                    you: 1850
+🤖 หาร ฿1,850 กี่คน?  [2 คน][3 คน][4 คน]…      you tap: 4 คน
+🤖 มีค่าเซอร์วิสหรือ VAT?  [ไม่มี][VAT 7%][เซอร์วิส 10%][เซอร์วิส+VAT]   tap
+🤖 💸 คนละ ฿544.37  + PromptPay QR
+```
+First time? It asks for your PromptPay number before the bill and remembers it after that. In group chats (where LINE shows no menu) the same conversation starts by typing **หารบิล**. Only the person who started it can answer, and dinner chatter in between is ignored. Fast typers can still use one-line shortcuts like `หาร 1850 4 vat sc`.
+
 ## 💸 Split bills with PromptPay
 
 ```
@@ -59,11 +73,12 @@ Aom:   ใครยังไม่จ่าย  →  🤖 ⏳ ยังเหล
 
 ## Try it in 30 seconds (no accounts needed)
 
+Double-click **`Try Khun Chuay.cmd`**, or:
 ```bash
 npm install
 npm run try
 ```
-This runs the real bot code in your terminal with live air/weather data. QR codes are saved as PNG files you can scan with your banking app. You can switch between private and group chats and play different friends (`/me Mai`, `/paid`).
+This runs the real bot code in a simulated LINE chat with live air/weather data. Press **1–6** for the menu buttons and **a, b, c…** for the buttons under a message. QR codes open as images you can scan with your banking app. Switch to a group chat with `/group` and play a friend with `/me Mai`.
 
 ## Put it on LINE (free, about 10 minutes)
 See **[SETUP.md](SETUP.md)**. In short: create a LINE channel, then run `npm run setup`.
@@ -91,17 +106,19 @@ See **[SETUP.md](SETUP.md)**. In short: create a LINE channel, then run `npm run
 | [`src/app.js`](src/app.js) | The bot: routing, bills, payment tracking, alerts, scheduled jobs, HTTP |
 | [`src/line.js`](src/line.js) | LINE webhook signature check (HMAC-SHA256, constant-time), reply/push/profile |
 | [`src/messages.js`](src/messages.js) | Every reply in Thai + English, Flex message cards, quick-reply buttons |
-| [`scripts/try.mjs`](scripts/try.mjs) | Terminal simulator |
-| [`scripts/setup.mjs`](scripts/setup.mjs) | One-command deploy |
+| [`src/richmenu.js`](src/richmenu.js) | The button menu's layout (3 × 2 grid, each button "types" a message) |
+| [`scripts/try.mjs`](scripts/try.mjs) | LINE chat simulator with tappable buttons |
+| [`scripts/setup.mjs`](scripts/setup.mjs) | One-command deploy, including the button menu |
+| [`scripts/richmenu.mjs`](scripts/richmenu.mjs) · [`make-richmenu-image.py`](scripts/make-richmenu-image.py) | Installs the menu via the LINE API · draws its image |
 
 ## Testing
 
 ```bash
-npm test          # 16 tests: units + full conversations through the real HTTP handler
+npm test          # 21 tests: units + full conversations through the real HTTP handler
 npm run test:qr   # scans generated QR codes with OpenCV and re-checks every field + CRC in Python
 ```
 
-The end-to-end tests send **signed webhooks** into the real request handler and walk through whole journeys: a group splits a bill with VAT + service charge, friends tap "paid" (including double taps and the payer tapping their own bill), forged webhooks are rejected, tampered QR links get 403, and the morning schedule fires once while the rain alert respects its 6-hour cool-down.
+The end-to-end tests send **signed webhooks** into the real request handler and walk through whole journeys: a group splits a bill with VAT + service charge, friends tap "paid" (including double taps and the payer tapping their own bill), forged webhooks are rejected, tampered QR links get 403, the morning schedule fires once while the rain alert respects its 6-hour cool-down, a brand-new user splits a bill purely by tapping, group chatter and other people's taps can't hijack someone's half-finished split, and every menu button is pressed to check it leads somewhere useful.
 
 QR codes are verified **independently**: a different QR reader (OpenCV) scans the PNGs, and a separate EMVCo parser and CRC implementation (Python's `binascii.crc_hqx`) check the result. That way the code isn't just agreeing with itself. The bot was also run in Cloudflare's own runtime (`wrangler dev` / workerd) and checked endpoint by endpoint.
 
@@ -111,10 +128,11 @@ QR codes are verified **independently**: a different QR reader (OpenCV) scans th
 - **Privacy:** QR images are rendered by the bot itself rather than an external QR API, and the image links are HMAC-signed so the endpoint can't be used to generate arbitrary codes.
 - **Fits Cloudflare's free plan:** outgoing requests per scheduled run are budgeted (the free plan allows 50), users within about 1 km share a single forecast request, and the 135 KB station list is cached for 15 minutes.
 - **No spam in groups:** the bot only speaks when it's spoken to with a command.
+- **Conversation state** is a tiny per-person, per-chat record in KV that expires after 10 minutes, so an abandoned split never gets stuck. Any new command simply replaces it.
 
 ## Limits and ideas
 
 - LINE's free plan includes a limited number of **push** messages per month, and a push to a group counts once per member. Replies to messages are free. Daily alerts suit personal chats more than big groups.
-- Splits are equal. Next: uneven splits ("Mai had 2 beers"), a rich menu, and a weekly "who still owes me" reminder.
+- Splits are equal. Next: uneven splits ("Mai had 2 beers") and a weekly "who still owes me" reminder.
 
 Built with JavaScript on Cloudflare Workers. Free data: [Air4Thai](https://air4thai.pcd.go.th) (Pollution Control Department), [Open-Meteo](https://open-meteo.com) (CC BY 4.0). QR generation: [qrcode-generator](https://github.com/kazuhikoarase/qrcode-generator) (MIT).

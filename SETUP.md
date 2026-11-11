@@ -4,11 +4,8 @@ You need: a LINE account (on your phone) and an email address for Cloudflare.
 Everything is on the free plans. No credit card needed.
 
 ## 0. Try it first (optional, 1 minute)
-```
-cd C:\Projects\khun-chuay
-npm run try
-```
-Type `ตั้งพร้อมเพย์ 08xxxxxxxx`, then `หาร 1850 4`, then open the QR image it saved and scan it with your bank app. **Don't press pay**, just check that it shows your name and the amount. Type `/quit` to leave.
+Double-click **`Try Khun Chuay.cmd`** in the `C:\Projects\khun-chuay` folder.
+Press **1** (💸 หารบิล), type your PromptPay phone number, then `1850`, press a letter for the number of people, and another for VAT. The QR image opens by itself. Scan it with your bank app. **Don't press pay**, just check that it shows your name and the amount. Type `/quit` to leave.
 
 ## 1. Create the LINE bot (5 min)
 1. Go to **https://developers.line.biz/console/** and log in with LINE.
@@ -33,7 +30,8 @@ It will:
 2. create the free storage
 3. deploy the bot. If it asks you to pick a `workers.dev` subdomain, type any name.
 4. ask you to paste the **Channel secret** and the **access token** from step 1
-5. print your **Webhook URL**, ending in `/webhook`
+5. install the **button menu** in LINE
+6. print your **Webhook URL**, ending in `/webhook`
 
 ## 3. Connect LINE to the bot (2 min)
 In **LINE Developers ➜ your channel ➜ Messaging API** tab:
@@ -45,10 +43,11 @@ Click the **LINE Official Account Manager** link on the same page ➜ **Settings
 - **Auto-response:** OFF   ·   **Greeting message:** OFF   ·   **Webhooks:** ON
 
 ## 4. Use it 🎉
-- Scan the bot's **QR code** (Messaging API tab) with LINE to add it as a friend, and say `สวัสดี`.
-- Type `ตั้งพร้อมเพย์ 08xxxxxxxx`.
-- Send your **location** (+ ➜ Location) to get air + rain, then `แจ้งเตือน 7` for a daily summary.
-- Invite it into your friends' group and type `หาร 1850 4` after dinner.
+- Scan the bot's **QR code** (Messaging API tab) with LINE to add it as a friend. The button menu appears under the chat.
+- Tap **💸 หารบิล** and answer the questions. The first time, it asks for your PromptPay number.
+- Tap **😷 ค่าฝุ่น**, share your location, then tap **⏰** for a daily morning summary.
+- Invite it into your friends' group and type **หารบิล** after dinner.
+- Menu not showing? Close and reopen the chat, or run `npm run richmenu`.
 
 ## If something doesn't work
 - **No reply at all:** check that *Use webhook* is ON, *Auto-response* is OFF, and *Verify* says Success.

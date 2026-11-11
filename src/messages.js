@@ -2,7 +2,8 @@
 import { baht } from "./bill.js";
 import { heatNote, peakPm25, pm25Level, rainWindow, stationAgeHours } from "./air.js";
 
-export const detectLang = (text) => (/[฀-๿]/.test(text) ? "th" : "en");
+// Thai letters -> Thai. Latin letters -> English. Only numbers/emoji -> Thai (it's a Thai-first bot).
+export const detectLang = (text) => (/[฀-๿]/.test(text) || !/[a-z]/i.test(text) ? "th" : "en");
 export const t = (lang, th, en) => (lang === "th" ? th : en);
 
 export const text = (str, quickReply) => (quickReply ? { type: "text", text: str, quickReply } : { type: "text", text: str });
@@ -15,9 +16,92 @@ export const quickMenu = (lang) => ({
     qrItem(t(lang, "😷 ฝุ่น", "😷 Air"), t(lang, "ฝุ่น", "air")),
     qrItem(t(lang, "☔ ฝน", "☔ Rain"), t(lang, "ฝน", "rain")),
     qrItem(t(lang, "⏰ แจ้งเตือน 7 โมง", "⏰ Alert 7am"), t(lang, "แจ้งเตือน 7", "alert 7")),
-    qrItem(t(lang, "💸 หารบิล?", "💸 Split?"), t(lang, "วิธีใช้", "help")),
+    qrItem(t(lang, "💸 หารบิล", "💸 Split bill"), t(lang, "หารบิล", "split bill")),
   ],
 });
+
+export const startButtons = (lang) => ({
+  items: [
+    qrItem(t(lang, "💸 หารบิล", "💸 Split bill"), t(lang, "หารบิล", "split bill")),
+    qrItem(t(lang, "💰 QR รับเงิน", "💰 Get paid QR"), t(lang, "รับเงิน", "qr")),
+    qrItem(t(lang, "😷 ค่าฝุ่น", "😷 Air"), t(lang, "ฝุ่น", "air")),
+    qrItem(t(lang, "☔ ฝน", "☔ Rain"), t(lang, "ฝน", "rain")),
+    qrItem(t(lang, "⚙️ ตั้งค่า", "⚙️ Settings"), t(lang, "ตั้งค่า", "settings")),
+  ],
+});
+
+// ---------- guided conversations (tap buttons instead of typing commands) ----------
+// Postback buttons: the chat shows `displayText` as if you typed it, the bot gets `data`.
+const tap = (label, data, displayText = label) => ({ type: "action", action: { type: "postback", label, data, displayText } });
+const cancelBtn = (lang) => tap(t(lang, "✖️ ยกเลิก", "✖️ Cancel"), "f|cancel", t(lang, "ยกเลิก", "Cancel"));
+
+export const askPromptPay = (lang, retry) => text(t(lang,
+  (retry ? "🤔 เบอร์นี้ใช้ไม่ได้ ลองใหม่นะ\n" : "💳 ขอพร้อมเพย์ของคุณก่อน (ตั้งครั้งเดียว ใช้ได้ตลอด)\n") +
+    "พิมพ์เบอร์มือถือ หรือเลขบัตรประชาชน ที่ผูกพร้อมเพย์ไว้ เช่น 0812345678",
+  (retry ? "🤔 That doesn't look right, try again\n" : "💳 First, your PromptPay (set once, used every time)\n") +
+    "Type the phone number or national ID linked to your PromptPay, e.g. 0812345678"),
+  { items: [cancelBtn(lang)] });
+
+export const ppSaved = (lang, masked) => text(t(lang, `✅ บันทึกพร้อมเพย์ ${masked} แล้ว`, `✅ PromptPay ${masked} saved`));
+
+export const askTotal = (lang, retry) => text(t(lang,
+  (retry ? "🤔 ใส่เป็นตัวเลขนะ " : "💸 ") + "ยอดรวมทั้งบิลเท่าไหร่? พิมพ์ตัวเลขได้เลย เช่น 1850",
+  (retry ? "🤔 Just the number please. " : "💸 ") + "What's the bill total? Just type the number, e.g. 1850"),
+  { items: [cancelBtn(lang)] });
+
+export const askPeople = (lang, total, retry) => text(t(lang,
+  (retry ? "🤔 เลือกจำนวนคน (2–50) " : "") + `หาร ${baht(total)} กี่คน? (นับตัวเองด้วย)`,
+  (retry ? "🤔 Pick 2–50 people. " : "") + `Split ${baht(total)} between how many people? (including you)`),
+  { items: [...[2, 3, 4, 5, 6, 7, 8, 9, 10].map((n) => tap(t(lang, `${n} คน`, `${n} people`), `f|people|${n}`)), cancelBtn(lang)] });
+
+export const askExtras = (lang) => text(t(lang,
+  "มีค่าเซอร์วิสหรือ VAT เพิ่มไหม? (ถ้าในบิลรวมไว้แล้ว กด \"ไม่มี\")",
+  "Any service charge or VAT on top? (If it's already in the total, tap \"None\")"),
+  { items: [
+    tap(t(lang, "ไม่มี", "None"), "f|extras|none"),
+    tap("VAT 7%", "f|extras|vat"),
+    tap(t(lang, "เซอร์วิส 10%", "Service 10%"), "f|extras|sc"),
+    tap(t(lang, "เซอร์วิส+VAT", "Service + VAT"), "f|extras|both"),
+    cancelBtn(lang),
+  ] });
+
+export const askQrAmount = (lang, retry) => text(t(lang,
+  (retry ? "🤔 ใส่เป็นตัวเลขนะ " : "💰 ") + "จะรับเงินเท่าไหร่? พิมพ์ตัวเลข เช่น 500",
+  (retry ? "🤔 Just the number please. " : "💰 ") + "How much do you want to receive? Type a number, e.g. 500"),
+  { items: [cancelBtn(lang)] });
+
+export const cancelled = (lang) => text(t(lang, "👌 ยกเลิกแล้ว", "👌 Cancelled"));
+export const flowExpired = (lang) => text(t(lang, "⌛ หมดเวลาแล้ว เริ่มใหม่ได้เลย: พิมพ์ \"หารบิล\"", "⌛ That timed out. Start again: type \"split bill\""));
+
+export const afterBill = (lang) => ({
+  items: [
+    { type: "action", action: { type: "message", label: t(lang, "👀 ใครยังไม่จ่าย", "👀 Who hasn't paid"), text: t(lang, "ใครยังไม่จ่าย", "who paid") } },
+    { type: "action", action: { type: "message", label: t(lang, "💸 หารบิลใหม่", "💸 New bill"), text: t(lang, "หารบิล", "split bill") } },
+  ],
+});
+
+export function settings(lang, { masked, chat }) {
+  const msg = (label, txt) => ({ type: "action", action: { type: "message", label, text: txt } });
+  const status = [
+    `💳 ${t(lang, "พร้อมเพย์", "PromptPay")}: ${masked || t(lang, "ยังไม่ตั้ง", "not set")}`,
+    `📍 ${t(lang, "ตำแหน่ง", "Location")}: ${chat.lat != null ? t(lang, "ตั้งแล้ว", "set") : t(lang, "ยังไม่ตั้ง", "not set")}`,
+    `⏰ ${t(lang, "สรุปทุกเช้า", "Daily summary")}: ${chat.alertHour != null ? `${String(chat.alertHour).padStart(2, "0")}:00` : t(lang, "ปิด", "off")}`,
+    `☔ ${t(lang, "เตือนฝน", "Rain alerts")}: ${chat.rainAlert ? t(lang, "เปิด", "on") : t(lang, "ปิด", "off")}`,
+  ].join("\n");
+  return text(`⚙️ ${t(lang, "ตั้งค่า", "Settings")}\n\n${status}\n\n${t(lang, "กดปุ่มด้านล่างเพื่อเปลี่ยน 👇", "Tap a button below to change 👇")}`, {
+    items: [
+      msg(t(lang, "💳 พร้อมเพย์", "💳 PromptPay"), t(lang, "ตั้งพร้อมเพย์", "set promptpay")),
+      { type: "action", action: { type: "location", label: t(lang, "📍 ตำแหน่ง", "📍 Location") } },
+      msg(t(lang, "⏰ ทุกเช้า 6 โมง", "⏰ Daily 6am"), t(lang, "แจ้งเตือน 6", "alert 6")),
+      msg(t(lang, "⏰ ทุกเช้า 7 โมง", "⏰ Daily 7am"), t(lang, "แจ้งเตือน 7", "alert 7")),
+      msg(t(lang, "⏰ ทุกเช้า 8 โมง", "⏰ Daily 8am"), t(lang, "แจ้งเตือน 8", "alert 8")),
+      msg(chat.rainAlert ? t(lang, "☔ ปิดเตือนฝน", "☔ Rain alerts off") : t(lang, "☔ เปิดเตือนฝน", "☔ Rain alerts on"),
+        chat.rainAlert ? t(lang, "เตือนฝน ปิด", "rain alert off") : t(lang, "เตือนฝน", "rain alert")),
+      msg(t(lang, "🔕 ปิดแจ้งเตือน", "🔕 Alerts off"), t(lang, "ปิดแจ้งเตือน", "alert off")),
+      msg(t(lang, "❓ วิธีใช้", "❓ Help"), t(lang, "วิธีใช้", "help")),
+    ],
+  });
+}
 
 export const askLocation = (lang) => text(
   t(lang, "📍 ส่งตำแหน่งของคุณมาก่อนนะ แล้วจะบอกค่าฝุ่นกับฝนแถวนั้นให้\n(กดปุ่มด้านล่าง หรือ + ➜ ตำแหน่ง)",
@@ -26,7 +110,9 @@ export const askLocation = (lang) => text(
 
 export function help(lang) {
   return text(t(lang,
-`🙏 สวัสดี! คุณช่วย ทำอะไรได้บ้าง
+`🙏 สวัสดี! กดปุ่มเมนูด้านล่างได้เลย ไม่ต้องจำคำสั่ง 👇
+
+หรือพิมพ์ลัดสำหรับคนรีบ:
 
 💸 หารบิล + QR พร้อมเพย์
 • ตั้งพร้อมเพย์ 0812345678
@@ -44,7 +130,9 @@ export function help(lang) {
 • แจ้งเตือน 7 ➜ ส่งสรุปให้ทุกเช้า 7 โมง
 • เตือนฝน ➜ เตือนก่อนฝนตก
 • ปิดแจ้งเตือน ➜ หยุดส่ง`,
-`🙏 Hi! Here's what Khun Chuay can do
+`🙏 Hi! Just tap the menu buttons below, no commands to remember 👇
+
+Or use shortcuts if you're in a hurry:
 
 💸 Split bills with PromptPay QR
 • promptpay 0812345678
@@ -61,12 +149,13 @@ export function help(lang) {
 • weather ➜ everything at once
 • alert 7 ➜ daily summary at 7am
 • rain alert ➜ warn me before rain
-• alert off ➜ stop alerts`), quickMenu(lang));
+• alert off ➜ stop alerts`), startButtons(lang));
 }
 
 export const welcomeGroup = (lang) => text(t(lang,
-  "🙏 สวัสดีทุกคน! พิมพ์ \"หาร 1850 4\" เพื่อแบ่งบิล 4 คนพร้อม QR พร้อมเพย์\nคนจ่ายต้อง \"ตั้งพร้อมเพย์ 08xxxxxxxx\" ก่อนครั้งเดียว · พิมพ์ \"วิธีใช้\" ดูทั้งหมด",
-  "🙏 Hi everyone! Type \"split 1850 4\" to split a bill 4 ways with a PromptPay QR.\nWhoever paid sets \"promptpay 08xxxxxxxx\" once first · type \"help\" for more"));
+  "🙏 สวัสดีทุกคน! กินข้าวเสร็จกด \"💸 หารบิล\" ด้านล่างได้เลย\nเดี๋ยวคุณช่วยถามยอด กี่คน แล้วทำ QR พร้อมเพย์ให้ทุกคนสแกนจ่าย 👌",
+  "🙏 Hi everyone! After a meal, tap \"💸 Split bill\" below.\nI'll ask the total and how many people, then make a PromptPay QR for everyone to scan 👌"),
+  startButtons(lang));
 
 export const splitErrors = {
   format: (l) => t(l, "พิมพ์แบบนี้นะ: หาร 1850 4\n(ยอดรวม แล้วตามด้วยจำนวนคน, เพิ่ม vat หรือ sc ได้)", "Try: split 1850 4\n(total, then number of people; add vat or sc if needed)"),

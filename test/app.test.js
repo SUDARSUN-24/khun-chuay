@@ -27,18 +27,18 @@ function setup(opts = {}) {
   async function say(userId, textMsg, groupId) {
     const before = line.sent.length;
     await send([{ type: "message", replyToken: `r${++n}`, source: src(userId, groupId), message: { type: "text", id: String(n), text: textMsg } }]);
-    return line.sent.slice(before).map((s) => s.messages[0]);
+    return line.sent.slice(before).flatMap((s) => s.messages);
   }
   async function tap(userId, data, groupId) {
     const before = line.sent.length;
     await send([{ type: "postback", replyToken: `r${++n}`, source: src(userId, groupId), postback: { data } }]);
-    return line.sent.slice(before).map((s) => s.messages[0]);
+    return line.sent.slice(before).flatMap((s) => s.messages);
   }
   async function shareLocation(userId, lat, lon, groupId) {
     const before = line.sent.length;
     await send([{ type: "message", replyToken: `r${++n}`, source: src(userId, groupId),
       message: { type: "location", id: String(n), latitude: lat, longitude: lon, address: "Bangkok" } }]);
-    return line.sent.slice(before).map((s) => s.messages[0]);
+    return line.sent.slice(before).flatMap((s) => s.messages);
   }
   return { app, kv, line, say, tap, shareLocation };
 }
@@ -195,4 +195,119 @@ test("stays quiet in groups for normal chatter, helps in private", async () => {
   assert.equal((await say("Umai", "555 กินไรดี", "Cgroup1")).length, 0);
   const [r] = await say("Umai", "what's up");
   assert.match(r.text, /help/);
+});
+
+// ---------- guided conversations (menu buttons) ----------
+const buttons = (msg) => msg.quickReply?.items.map((i) => i.action) ?? [];
+const button = (msg, label) => buttons(msg).find((a) => a.label.includes(label));
+
+test("menu: a brand-new user splits a bill only by tapping buttons", async () => {
+  const { say, tap } = setup();
+  // Rich-menu button sends "💸 หารบิล"; no PromptPay yet, so it asks for that first.
+  let [r] = await say("Umai", "💸 หารบิล");
+  assert.match(r.text, /ขอพร้อมเพย์ของคุณก่อน/);
+  [r] = await say("Umai", "แมว");                           // nonsense -> asks again
+  assert.match(r.text, /ใช้ไม่ได้/);
+  let replies = await say("Umai", "096 123 4567");
+  assert.match(replies[0].text, /096-xxx-4567/);            // saved...
+  assert.match(replies[1].text, /ยอดรวมทั้งบิลเท่าไหร่/);     // ...and straight on to the bill
+  [r] = await say("Umai", "1,850 บาท");
+  assert.match(r.text, /หาร ฿1,850 กี่คน/);
+  assert.equal(buttons(r).length, 10);                      // 2..10 people + cancel
+  [r] = await tap("Umai", button(r, "4 คน").data);
+  assert.match(r.text, /เซอร์วิสหรือ VAT/);
+  [r] = await tap("Umai", button(r, "เซอร์วิส+VAT").data);
+  assert.equal(r.type, "flex");
+  assert.match(r.altText, /คนละ ฿544\.37/);
+  assert.ok(button(r, "ใครยังไม่จ่าย"));                     // next-step buttons under the card
+  // "who hasn't paid" from the private chat finds the bill
+  [r] = await say("Umai", "👀 ใครยังไม่จ่าย");
+  assert.match(r.text, /เหลืออีก 3 คน/);
+});
+
+test("menu: typed answers work too, in English", async () => {
+  const { say } = setup();
+  await say("Uton", "promptpay 0891112222");
+  let [r] = await say("Uton", "split bill");
+  assert.match(r.text, /bill total/);
+  [r] = await say("Uton", "900");
+  [r] = await say("Uton", "3 people");
+  assert.match(r.text, /service charge or VAT/);
+  [r] = await say("Uton", "none");
+  assert.match(r.altText, /฿300 each/);
+});
+
+test("menu: group chatter mid-flow is ignored, other people's taps too, cancel works", async () => {
+  const { say, tap } = setup();
+  const G = "Cdinner";
+  await say("Uaom", "ตั้งพร้อมเพย์ 0812345678");
+  let [r] = await say("Uaom", "หารบิล", G);
+  assert.match(r.text, /ยอดรวม/);
+  assert.equal((await say("Uaom", "555 อร่อยมาก", G)).length, 0);   // not an answer: stay quiet in groups
+  [r] = await say("Uaom", "2400", G);
+  const four = button(r, "4 คน").data;
+  assert.equal((await tap("Umai", four, G)).length, 0);              // Mai can't answer Aom's question
+  [r] = await tap("Uaom", four, G);
+  assert.match(r.text, /VAT/);
+  [r] = await say("Uaom", "ยกเลิก", G);
+  assert.match(r.text, /ยกเลิกแล้ว/);
+  [r] = await tap("Uaom", "f|extras|none", G);                       // old button after cancel: nothing happens
+  assert.equal(r, undefined);
+  // A new command in the middle of a flow just starts that command.
+  await say("Uaom", "หารบิล");
+  [r] = await say("Uaom", "ฝุ่น");
+  assert.match(r.text, /ส่งตำแหน่ง/);
+  [r] = await say("Uaom", "1850");                                   // flow was dropped, so this is unknown now
+  assert.match(r.text, /ไม่เข้าใจ/);
+});
+
+test("menu: QR to receive money, and settings shows current state", async () => {
+  const { say, shareLocation } = setup();
+  let [r] = await say("Ubeam", "💰 รับเงิน");
+  assert.match(r.text, /ขอพร้อมเพย์/);
+  let replies = await say("Ubeam", "0812345678");
+  assert.match(replies[1].text, /จะรับเงินเท่าไหร่/);
+  [r] = await say("Ubeam", "350");
+  assert.equal(r.type, "flex");
+  assert.match(r.altText, /฿350/);
+
+  [r] = await say("Ubeam", "⚙️ ตั้งค่า");
+  assert.match(r.text, /พร้อมเพย์: 081-xxx-5678/);
+  assert.match(r.text, /ตำแหน่ง: ยังไม่ตั้ง/);
+  await shareLocation("Ubeam", 13.73, 100.54);
+  await say("Ubeam", button(r, "7 โมง").text);
+  await say("Ubeam", "เตือนฝน");
+  [r] = await say("Ubeam", "ตั้งค่า");
+  assert.match(r.text, /ตำแหน่ง: ตั้งแล้ว\n⏰ สรุปทุกเช้า: 07:00\n☔ เตือนฝน: เปิด/);
+  assert.ok(button(r, "ปิดเตือนฝน"));
+});
+
+test("rich menu: grid covers the image and every button does something useful", async () => {
+  const { richMenuDefinition } = await import("../src/richmenu.js");
+  const { installRichMenu } = await import("../scripts/richmenu.mjs");
+  const def = richMenuDefinition();
+  const area = def.areas.reduce((n, a) => n + a.bounds.width * a.bounds.height, 0);
+  assert.equal(area, 2500 * 1686);              // no gaps, no overlaps
+  assert.ok(def.chatBarText.length <= 14);
+
+  const { say } = setup();
+  await say("Uaom", "ตั้งพร้อมเพย์ 0812345678");
+  const expect = [/ยอดรวมทั้งบิล/, /ยังไม่มีบิล/, /จะรับเงินเท่าไหร่/, /ส่งตำแหน่ง/, /ส่งตำแหน่ง/, /⚙️ ตั้งค่า/];
+  for (const [i, a] of def.areas.entries()) {
+    const [r] = await say("Uaom", a.action.text);
+    assert.match(r.text, expect[i], a.action.text);
+    await say("Uaom", "ยกเลิก");
+  }
+
+  // Install script talks to the LINE API in the right order (with a fake LINE).
+  const calls = [];
+  const fakeApi = async (url, init) => {
+    calls.push(`${init.method} ${url.replace(/https:\/\/api(-data)?\.line\.me\/v2\/bot/, "")}`);
+    if (url.endsWith("/richmenu/list")) return new Response(JSON.stringify({ richmenus: [{ richMenuId: "old1", name: "khun-chuay-main" }] }));
+    if (url.endsWith("/richmenu") && init.method === "POST") return new Response(JSON.stringify({ richMenuId: "new1" }));
+    return new Response("{}");
+  };
+  assert.equal(await installRichMenu("token", fakeApi), "new1");
+  assert.deepEqual(calls, ["GET /richmenu/list", "DELETE /richmenu/old1", "POST /richmenu",
+    "POST /richmenu/new1/content", "POST /user/all/richmenu/new1"]);
 });

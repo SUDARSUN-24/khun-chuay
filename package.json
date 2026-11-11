@@ -10,7 +10,8 @@
     "test:qr": "node scripts/make-test-qrs.mjs && python test/decode_qr.py",
     "dev": "wrangler dev",
     "deploy": "wrangler deploy",
-    "setup": "node scripts/setup.mjs"
+    "setup": "node scripts/setup.mjs",
+    "richmenu": "node scripts/richmenu.mjs"
   },
   "dependencies": {
     "qrcode-generator": "2.0.4"

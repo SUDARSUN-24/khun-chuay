@@ -32,7 +32,38 @@ const RE = {
   alert: /^(?:แจ้งเตือน|เตือน|alert|daily)\s*(?:ทุกเช้า|ตอน|at)?\s*(\d{1,2})(?:[:.](\d{2}))?\s*(โมง|น\.?|นาฬิกา|am|pm)?$/i,
   rainAlert: /^(เตือนฝน|rain\s*alerts?)\s*(on|off|เปิด|ปิด)?$/i,
   location: /^(ตำแหน่ง|location|ส่งตำแหน่ง)$/i,
+  // Starting a guided conversation (from menu buttons or typed)
+  splitStart: /^(หารบิล|แบ่งบิล|แชร์บิล|หาร|split\s*(the\s*)?bill|split)$/i,
+  qrStart: /^(รับเงิน|qr\s*รับเงิน|qr|คิวอาร์|get\s*paid|receive\s*money)$/i,
+  ppStart: /^(ตั้ง\s*(?:ค่า\s*)?พร้อมเพย์|set\s*promptpay|promptpay|พร้อมเพย์)$/i,
+  settings: /^(ตั้งค่า|settings?)$/i,
+  cancel: /^(ยกเลิก|cancel)$/i,
 };
+
+const isCommand = (msg) => isSplitCommand(msg) || Object.entries(RE).some(([k, re]) => k !== "cancel" && re.test(msg));
+
+// Rich-menu buttons send text like "💸 หารบิล": ignore leading emoji/symbols when matching.
+const normalize = (raw) => {
+  const s = raw.trim().replace(/\s+/g, " ");
+  const stripped = s.replace(/^[^\p{L}\p{N}?฿]+/u, "").trim();
+  return stripped || s;
+};
+
+const readAmount = (s) => {
+  const m = String(s).replace(/,/g, "").match(/^฿?\s*(\d+(?:\.\d{1,2})?)\s*(บาท|baht|฿)?$/i);
+  const n = m ? Number(m[1]) : NaN;
+  return n > 0 && n <= 1_000_000 ? n : null;
+};
+
+const EXTRAS = {
+  none: { vat: false, sc: false }, vat: { vat: true, sc: false },
+  sc: { vat: false, sc: true }, both: { vat: true, sc: true },
+};
+const typedExtras = (s) =>
+  /^(ไม่มี|ไม่|no|none|0)$/i.test(s) ? "none"
+    : /^(ทั้งคู่|ทั้งสอง|both|all|เซอร์วิส\s*\+?\s*vat)$/i.test(s) ? "both"
+      : /^(vat|แวต|แวท|ภาษี)$/i.test(s) ? "vat"
+        : /^(sc|service|เซอร์วิส|ค่าบริการ)$/i.test(s) ? "sc" : null;
 
 export function createApp({ kv, line, fetchFn = fetch, secret, now = () => new Date() }) {
   const getJson = (k) => kv.get(k, "json");
@@ -57,6 +88,10 @@ export function createApp({ kv, line, fetchFn = fetch, secret, now = () => new D
   async function createBill(ev, lang, origin, msg) {
     const p = parseSplit(msg);
     if (p.error) return text(M.splitErrors[p.error](lang));
+    return makeBill(ev, lang, origin, p);
+  }
+
+  async function makeBill(ev, lang, origin, p) {
     const target = await getJson(`pp:${ev.source.userId}`);
     if (!target) return M.needPromptPay(lang);
     const payerName = (await line.displayName(ev.source)) || t(lang, "คนจ่าย", "the payer");
@@ -70,7 +105,85 @@ export function createApp({ kv, line, fetchFn = fetch, secret, now = () => new D
     };
     await putJson(`bill:${bill.id}`, bill, 30 * DAY);
     await kv.put(`lastbill:${bill.chatId}`, bill.id, { expirationTtl: 30 * DAY });
-    return M.billFlex(lang, bill, await qrUrl(origin, promptPayPayload(target, bill.share)));
+    // So "who hasn't paid" also works from the private chat (where the menu lives).
+    await kv.put(`lastbill:user:${bill.payerId}`, bill.id, { expirationTtl: 30 * DAY });
+    const card = M.billFlex(lang, bill, await qrUrl(origin, promptPayPayload(target, bill.share)));
+    return { ...card, quickReply: M.afterBill(lang) };
+  }
+
+  // ---------- guided conversations ----------
+  // One small record per person per chat: which question we're waiting on.
+  const flowKey = (src) => `flow:${chatIdOf(src)}:${src.userId}`;
+  const setFlow = (src, flow) => putJson(flowKey(src), flow, 600); // forgotten after 10 minutes
+  const endFlow = (src) => kv.delete(flowKey(src));
+
+  async function startSplit(src, lang) {
+    if (!(await getJson(`pp:${src.userId}`))) {
+      await setFlow(src, { step: "pp", then: "split", lang });
+      return M.askPromptPay(lang);
+    }
+    await setFlow(src, { step: "total", lang });
+    return M.askTotal(lang);
+  }
+
+  async function startQr(src, lang) {
+    if (!(await getJson(`pp:${src.userId}`))) {
+      await setFlow(src, { step: "pp", then: "qr", lang });
+      return M.askPromptPay(lang);
+    }
+    await setFlow(src, { step: "qrAmount", lang });
+    return M.askQrAmount(lang);
+  }
+
+  // An answer to the question we asked. In groups, ignore chatter that isn't an answer.
+  async function continueFlow(ev, flow, input, origin) {
+    const src = ev.source;
+    const lang = flow.lang;
+    const quietRetry = (msg) => (src.type === "user" ? msg : null);
+
+    if (flow.step === "pp") {
+      const target = parseTarget(input);
+      if (!target) return quietRetry(M.askPromptPay(lang, true));
+      await putJson(`pp:${src.userId}`, target);
+      const saved = M.ppSaved(lang, maskTarget(target));
+      if (flow.then === "split") { await setFlow(src, { step: "total", lang }); return [saved, M.askTotal(lang)]; }
+      if (flow.then === "qr") { await setFlow(src, { step: "qrAmount", lang }); return [saved, M.askQrAmount(lang)]; }
+      await endFlow(src);
+      return saved;
+    }
+    if (flow.step === "total") {
+      const total = readAmount(input);
+      if (!total) return quietRetry(M.askTotal(lang, true));
+      await setFlow(src, { step: "people", lang, total });
+      return M.askPeople(lang, total);
+    }
+    if (flow.step === "people") {
+      const people = Number(String(input).replace(/\s*(คน|people|ppl)$/i, ""));
+      if (!Number.isInteger(people) || people < 2 || people > 50) return quietRetry(M.askPeople(lang, flow.total, true));
+      await setFlow(src, { step: "extras", lang, total: flow.total, people });
+      return M.askExtras(lang);
+    }
+    if (flow.step === "extras") {
+      const choice = EXTRAS[input] ? input : typedExtras(input);
+      if (!choice) return quietRetry(M.askExtras(lang));
+      await endFlow(src);
+      return makeBill(ev, lang, origin, { total: flow.total, people: flow.people, ...EXTRAS[choice] });
+    }
+    if (flow.step === "qrAmount") {
+      const amount = readAmount(input);
+      if (!amount) return quietRetry(M.askQrAmount(lang, true));
+      await endFlow(src);
+      return quickQr(src, lang, origin, amount);
+    }
+    await endFlow(src);
+    return null;
+  }
+
+  async function quickQr(src, lang, origin, amount) {
+    const target = await getJson(`pp:${src.userId}`);
+    if (!target) return M.needPromptPay(lang);
+    const name = (await line.displayName(src)) || "";
+    return M.qrFlex(lang, amount, name, maskTarget(target), await qrUrl(origin, promptPayPayload(target, amount)));
   }
 
   async function markPaid(ev, billId) {
@@ -100,15 +213,43 @@ export function createApp({ kv, line, fetchFn = fetch, secret, now = () => new D
 
   // ---------- text commands ----------
   async function onText(ev, origin) {
-    const msg = ev.message.text.trim().replace(/\s+/g, " ");
+    const msg = normalize(ev.message.text);
     const lang = M.detectLang(msg);
     const src = ev.source;
     const chatId = chatIdOf(src);
     const isGroup = src.type !== "user";
 
+    // Mid-conversation? Treat the message as the answer, unless it's a new command.
+    const flow = await getJson(flowKey(src));
+    if (RE.cancel.test(msg)) {
+      if (flow) { await endFlow(src); return M.cancelled(flow.lang); }
+      return isGroup ? null : M.cancelled(lang);
+    }
+    if (flow && !isCommand(msg)) return continueFlow(ev, flow, msg, origin);
+    if (flow) await endFlow(src);
+
     if (RE.help.test(msg)) return M.help(lang);
+    if (RE.splitStart.test(msg)) return startSplit(src, lang);
+    if (RE.qrStart.test(msg)) return startQr(src, lang);
+    if (RE.ppStart.test(msg)) {
+      await setFlow(src, { step: "pp", lang });
+      return M.askPromptPay(lang);
+    }
+    if (RE.settings.test(msg)) {
+      const target = await getJson(`pp:${src.userId}`);
+      return M.settings(lang, { masked: target && maskTarget(target), chat: await getChat(chatId) });
+    }
+    // Just a phone number / ID typed in the private chat: that's obviously their PromptPay.
+    if (!isGroup && /^[\d\s-]{9,20}$/.test(msg) && parseTarget(msg)) {
+      const target = parseTarget(msg);
+      await putJson(`pp:${src.userId}`, target);
+      return text(t(lang, `✅ บันทึกพร้อมเพย์ ${maskTarget(target)} แล้ว\nกด 💸 หารบิล ได้เลย`, `✅ PromptPay ${maskTarget(target)} saved\nTap 💸 Split bill to start`), M.startButtons(lang));
+    }
     if (isSplitCommand(msg)) return createBill(ev, lang, origin, msg);
-    if (RE.status.test(msg)) return billStatus(await kv.get(`lastbill:${chatId}`), lang);
+    if (RE.status.test(msg)) {
+      const id = (await kv.get(`lastbill:${chatId}`)) || (isGroup ? null : await kv.get(`lastbill:user:${src.userId}`));
+      return billStatus(id, lang);
+    }
 
     let m;
     if ((m = msg.match(RE.setPP)) && parseTarget(m[1])) {
@@ -127,12 +268,9 @@ export function createApp({ kv, line, fetchFn = fetch, secret, now = () => new D
       return text(t(lang, "🗑 ลบพร้อมเพย์ของคุณแล้ว", "🗑 Your PromptPay has been deleted."));
     }
     if ((m = msg.match(RE.qr))) {
-      const amount = Number(m[1].replace(/,/g, ""));
-      if (!(amount > 0) || amount > 1_000_000) return text(M.splitErrors.total(lang));
-      const target = await getJson(`pp:${src.userId}`);
-      if (!target) return M.needPromptPay(lang);
-      const name = (await line.displayName(src)) || "";
-      return M.qrFlex(lang, amount, name, maskTarget(target), await qrUrl(origin, promptPayPayload(target, amount)));
+      const amount = readAmount(m[1]);
+      if (!amount) return text(M.splitErrors.total(lang));
+      return quickQr(src, lang, origin, amount);
     }
 
     // ----- air / rain -----
@@ -178,7 +316,7 @@ export function createApp({ kv, line, fetchFn = fetch, secret, now = () => new D
     }
 
     // Unknown message: help in private chat, stay quiet in groups (no spam).
-    return isGroup ? null : text(t(lang, "ไม่เข้าใจคำสั่งนี้ 🙏 พิมพ์ \"วิธีใช้\" เพื่อดูทั้งหมด", "Sorry, I didn't get that 🙏 Type \"help\" to see what I can do."), M.quickMenu(lang));
+    return isGroup ? null : text(t(lang, "ไม่เข้าใจคำสั่งนี้ 🙏 พิมพ์ \"วิธีใช้\" เพื่อดูทั้งหมด", "Sorry, I didn't get that 🙏 Type \"help\" to see what I can do."), M.startButtons(lang));
   }
 
   async function onEvent(ev, origin) {
@@ -186,9 +324,21 @@ export function createApp({ kv, line, fetchFn = fetch, secret, now = () => new D
       case "follow": return M.help("th");
       case "join": return M.welcomeGroup("th");
       case "postback": {
-        const [action, id] = ev.postback.data.split("|");
+        const [action, id, value] = ev.postback.data.split("|");
         if (action === "paid") return markPaid(ev, id);
         if (action === "status") return billStatus(id, "th");
+        if (action === "f") { // a button inside a guided conversation, e.g. "f|people|4"
+          const flow = await getJson(flowKey(ev.source));
+          const isUser = ev.source.type === "user";
+          if (id === "cancel") {
+            if (!flow) return null;
+            await endFlow(ev.source);
+            return M.cancelled(flow.lang);
+          }
+          // In a group everyone sees the buttons; only the person who started can answer.
+          if (!flow || flow.step !== id) return isUser ? M.flowExpired(flow?.lang || "th") : null;
+          return continueFlow(ev, flow, value, origin);
+        }
         return null;
       }
       case "message":
@@ -202,8 +352,8 @@ export function createApp({ kv, line, fetchFn = fetch, secret, now = () => new D
           await saveChat(chatId, chat);
           const { report } = await weatherFor(chat, "all");
           const L = chat.lang;
-          return text(`${report}\n\n${t(L, "📌 จำตำแหน่งนี้ไว้แล้ว · พิมพ์ \"แจ้งเตือน 7\" รับสรุปทุกเช้า",
-            "📌 Location saved · type \"alert 7\" for a daily morning summary")}`, M.quickMenu(L));
+          return text(`${report}\n\n${t(L, "📌 จำตำแหน่งนี้ไว้แล้ว · กด ⏰ ด้านล่าง รับสรุปทุกเช้า",
+            "📌 Location saved · tap ⏰ below for a daily morning summary")}`, M.quickMenu(L));
         }
         return null;
       default:
@@ -215,7 +365,8 @@ export function createApp({ kv, line, fetchFn = fetch, secret, now = () => new D
     for (const ev of events) {
       try {
         const reply = await onEvent(ev, origin);
-        if (reply && ev.replyToken) await line.reply(ev.replyToken, [reply]);
+        const messages = [reply].flat().filter(Boolean);
+        if (messages.length && ev.replyToken) await line.reply(ev.replyToken, messages);
       } catch (err) {
         console.error("event failed", ev.type, err);
         if (ev.replyToken) {
