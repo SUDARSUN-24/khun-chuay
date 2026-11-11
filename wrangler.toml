@@ -1,0 +1,16 @@
+name = "khun-chuay"
+main = "src/index.js"
+compatibility_date = "2026-10-01"
+
+# Runs every hour (UTC). The bot converts to Bangkok time itself.
+[triggers]
+crons = ["0 * * * *"]
+
+# Free key-value storage for PromptPay IDs, bills, locations and alerts.
+# `npm run setup` fills in the id for you.
+[[kv_namespaces]]
+binding = "DB"
+id = "REPLACE_WITH_KV_ID"
+
+# Secrets are NOT stored here. They're set with `wrangler secret put`:
+#   LINE_CHANNEL_SECRET, LINE_CHANNEL_ACCESS_TOKEN

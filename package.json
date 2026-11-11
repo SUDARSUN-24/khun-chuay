@@ -1,0 +1,21 @@
+{
+  "name": "khun-chuay",
+  "version": "1.0.0",
+  "private": true,
+  "description": "LINE bot for Thailand: split bills with PromptPay QR codes, and get PM2.5 + rain alerts for where you are.",
+  "type": "module",
+  "scripts": {
+    "try": "node --use-system-ca scripts/try.mjs",
+    "test": "node --test test/",
+    "test:qr": "node scripts/make-test-qrs.mjs && python test/decode_qr.py",
+    "dev": "wrangler dev",
+    "deploy": "wrangler deploy",
+    "setup": "node scripts/setup.mjs"
+  },
+  "dependencies": {
+    "qrcode-generator": "2.0.4"
+  },
+  "devDependencies": {
+    "wrangler": "4.160.1"
+  }
+}
